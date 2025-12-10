@@ -19,38 +19,39 @@ puis de faire la transformation en matrice 4x4 ...
 using namespace BLA;
 using namespace std;
 
-using Mat = Matrix<4, 4, double>;
-using Vec = Matrix<4, 1, double>;
+using Mat4 = Matrix<4, 4, double>;
+using Vec4 = Matrix<4, 1, double>;
+using Vec3 = Matrix<3, 1, double>;
 
-double deltaT = 10.0; //ms
+double deltaT = 2.0; //ms
 
-const Matrix<4, 4, double> I4 = {1.0, 0, 0, 0,
-                                 0, 1.0, 0, 0,
-                                 0, 0, 1.0, 0,
-                                 0, 0, 0, 1.0};
-
-Matrix<4, 1, double> EulerToQuaternion(const Matrix<3, 1, double> &EulerAngles);
-Matrix<3, 1, double> QuaternionToEuler(const Matrix<4, 1, double> &q);
+Mat4 I4 = {1.0, 0, 0, 0,
+           0, 1.0, 0, 0,
+           0, 0, 1.0, 0,
+           0, 0, 0, 1.0};
 
 
 //Kalman filter vectors and matricess
-Matrix<3, 1, double> EulerAngles = {0, 0, 0};
-Vec Xestimate   = {1, 0, 0, 0};
-Mat Pestimate   = I4;
-Vec Xpredicted;
-Mat Ppredicted;
-Mat K;
-Mat A;
-Mat B;
-Mat Q           = 0.001*I4;
-Mat H           = I4;
-Mat R           = 1.55e-10*I4;
+Vec3 measuredEulerAngles = {0, 0, 0};
+Vec3 estimatedEulerAngles = {0, 0, 0};
+Vec4 Xestimate   = {1, 0, 0, 0};
+Mat4 Pestimate   = I4;
+Vec4 Xpredicted;
+Mat4 Ppredicted;
+Mat4 K;
+Mat4 A;
+Mat4 B;
+Mat4 Q           = 0.001*I4;
+Mat4 H           = I4;
+Mat4 R           = 1.55e-10*I4;
+Vec4 z;
 
+float w1, w2, w3; //gyro measurements on x, y and z axis
+float phi, the, psi;
 
-
-int get_pitch_roll_from_accelerometer(float &pitch, float &roll);
-
-
+int GetPitchRollFromAccelerometer(float &pitch, float &roll);
+Vec4 EulerToQuaternion(const Vec3 &EulerAngles);
+Vec3 QuaternionToEuler(const Vec4 &q);
 
 void setup() {
   Serial.begin(460800);
@@ -67,17 +68,20 @@ void setup() {
 void loop() {
   //prediction state and error covariance
   //  compute the new state matrix with gyro measurements
-  float w1, w2, w3; //gyro measurements on x, y and z axis
   IMU.readGyroscope(w1, w2, w3);
 
+  //state prediction version 1
   B = {   0, -w1/2, -w2/2, -w3/2,
        w1/2,     0,  w3/2, -w2/2,
        w2/2, -w3/2,     0,  w1/2,
        w3/2,  w2/2, -w1/2,     0};
 
+
   A = I4 + deltaT*B;
   
   Xpredicted = A*Xestimate;
+  
+  //covariance matrix prediction
   Ppredicted = A*Pestimate*(~A) + Q; //~ stands for transposition
 
   //kalman gain
@@ -85,30 +89,36 @@ void loop() {
 
   //estimate
   // get measurement (from accelero and magneto for sensor fusion)
-  float the, phi, psi;
-  psi = EulerAngles(2);
-  get_pitch_roll_from_accelerometer(the, phi);
-  Matrix<3, 1, double> euler = {phi, the, psi};
-  Vec z = EulerToQuaternion(euler);
 
-  Xestimate = Xpredicted + K*(z - H*Xpredicted); //this is the output
-  EulerAngles = QuaternionToEuler(Xestimate);
+  if(!GetPitchRollFromAccelerometer(the, phi)) {
+    // accelero fiable
+    psi = estimatedEulerAngles(2);
+    
+    measuredEulerAngles = {phi, the, psi};
+    z = EulerToQuaternion(measuredEulerAngles);
 
-  //error covariance
-  Pestimate = Ppredicted - K*H*Ppredicted;
+    Xestimate = Xpredicted + K*(z - H*Xpredicted); //this is the output
+    estimatedEulerAngles = QuaternionToEuler(Xestimate);
 
-  Matrix<3, 1, double> EulerAnglesDeg = RAD2DEG * EulerAngles;
-  Serial.print(EulerAnglesDeg(0)); //roll
+    //error covariance
+    Pestimate = Ppredicted - K*H*Ppredicted;
+  } else {
+    // accelero non fiable: on continue d'integrer sans correction
+    // Xestimate = Xpredicted;
+    // Pestimate = Ppredicted;
+  }
+
+  Serial.print(RAD2DEG * estimatedEulerAngles(0)); //roll
   Serial.print('\t');
-  Serial.println(EulerAnglesDeg(1)); //pitch
+  Serial.println(RAD2DEG * estimatedEulerAngles(1)); //pitch
 
   delay(deltaT);
 }
 
 
 
-Matrix<4, 1, double> EulerToQuaternion(const Matrix<3, 1, double> &EulerAngles) {
-    Matrix<4, 1, double> q;
+Vec4 EulerToQuaternion(const Vec3 &EulerAngles) {
+    Vec4 q;
 
     double phi = EulerAngles(0); // roll
     double the = EulerAngles(1); // pitch
@@ -131,8 +141,8 @@ Matrix<4, 1, double> EulerToQuaternion(const Matrix<3, 1, double> &EulerAngles) 
 }
 
 
-Matrix<3, 1, double> QuaternionToEuler(const Matrix<4, 1, double> &q) {
-    Matrix<3, 1, double> e;
+Vec3 QuaternionToEuler(const Vec4 &q) {
+    Vec3 e;
 
     double w = q(0);
     double x = q(1);
@@ -167,7 +177,7 @@ Matrix<3, 1, double> QuaternionToEuler(const Matrix<4, 1, double> &q) {
 
 
 //matrices and vectors functions
-int get_pitch_roll_from_accelerometer(float &pitch, float &roll) {
+int GetPitchRollFromAccelerometer(float &pitch, float &roll) {
   float xyz_norm, delta_acceleration;
   float x, y, z;
   float gravity_projection;
